@@ -1337,9 +1337,9 @@ twostageSL <- function(Y, X, newX = NULL, library.2stage, library.1stage,twostag
 # Loading MEPS train_data (from MEPS.R) using project GitHub file paths
 
 # train
-train <- read.csv("/home/jficorilli/DS_340W_Project/Replicating Parent Paper/train.csv")
+train <- read.csv("https://github.com/jficorilli/DS_340W_Project/raw/refs/heads/main/Replicating%20Parent%20Paper/train.csv")
 # test
-test <- read.csv("/home/jficorilli/DS_340W_Project/Replicating Parent Paper/") %>% select(!c("X"))
+test <- read.csv("https://github.com/jficorilli/DS_340W_Project/raw/refs/heads/main/Replicating%20Parent%20Paper/test.csv") %>% select(!c("X"))
 
 
 ######Establishing parallel processing (personal addition):
