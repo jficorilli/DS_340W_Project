@@ -1377,7 +1377,7 @@ tryCatch({
                              family.1 = binomial,
                              family.2 = gaussian,
                              family.single = gaussian,
-                             cvControl = list(V = 2))
+                             cvControl = list(V = 10))
   
   # construct one-stage superlearner
   # extract onestage matrix z1
