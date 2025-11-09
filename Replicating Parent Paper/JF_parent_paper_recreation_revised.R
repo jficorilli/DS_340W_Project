@@ -1600,7 +1600,7 @@ results_df <- results_df %>%
   relocate(MSE_10_8, .after = MSE) %>%
   relocate(Relative_MSE, .after = MSE_10_8) %>%
   relocate(RE, .after = Rsq) %>%
-  arrange(desc(MSE))
+  arrange(MSE)
 
 # Saving final results data frame as a csv file
 # write.csv(results_df, file = "results_table_recreation.csv")
