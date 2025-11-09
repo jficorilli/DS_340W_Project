@@ -1434,14 +1434,14 @@ registerDoParallel(cl)
 # Run computationally intensive code in parallel - code inside "tryCatch()" is from MEPS_ind.R
 tryCatch({
   ## SL library
-  SL.lib.stage1 <- c("SL.glm", "SL.glmnet", "SL.ranger", "SL.ksvm", "SL.ipredbagg", "SL.xgboost")
+  SL.lib.stage1 <- c("SL.glm", "SL.glmnet", "SL.rf.caret1", "SL.ksvm", "SL.nnet", "SL.xgboost")
   
   SL.lib.stage2 <- c("SL.logOLS.smear", "SL.gammaLogGLM", "SL.gammaIdentityGLM", "SL.manningGLM",
                      "SL.gengamma", "SL.coxph", "SL.wangZhou","SL.gilleskie", "SL.rf.caret1",
-                     "SL.glmnet", "SL.ksvm", "SL.ipredbagg", "SL.xgboost")
+                     "SL.glmnet", "SL.ksvm", "SL.nnet", "SL.xgboost")
   
   SL.lib.stage.single <- c("SL.mean", "SL.lm", "SL.zip", "SL.zinb", "SL.tobit", "SL.tweedie", "SL.rf.caret1",
-                           "SL.glmnet", "SL.ksvm", "SL.ipredbagg", "SL.xgboost")
+                           "SL.glmnet", "SL.ksvm", "SL.nnet", "SL.xgboost")
   
   
   ###################################################################################
