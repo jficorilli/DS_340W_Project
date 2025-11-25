@@ -6,15 +6,42 @@ editor: visual
 ---
 
 # Introduction
-This Quarto markdown file contains the code associated with the paper "Predicting Healthcare Expenditures for Individuals with Breast Cancer: Considering Chronic Comorbidities within a Two-Stage Machine Learning Approach." Several components of this paper's methodology and code implementation are derived from Wu et al. [1] and the paper's corresponding R code files (accessible at https://github.com/wuziyueemory/Two-stage-SuperLearner/tree/main/MEPS%20data%20analysis). This code primarily uses data from the Medical Expenditure Panel Survey (MEPS) Household Component Full Year Consolidated data files (years 2015, 2017, 2021, and 2023), which is managed by the U.S. Agency for Healthcare Research and Quality (AHRQ).  
+
+This Quarto markdown file contains the code associated with the paper "Predicting Healthcare Expenditures for Individuals with Breast Cancer: Considering Chronic Comorbidities within a Two-Stage Machine Learning Approach." Several components of this paper's methodology and code implementation are derived from Wu et al. \[1\] and the paper's corresponding R code files (accessible at https://github.com/wuziyueemory/Two-stage-SuperLearner/tree/main/MEPS%20data%20analysis). This code primarily uses data from the Medical Expenditure Panel Survey (MEPS) Household Component Full Year Consolidated data files (years 2015, 2017, 2021, and 2023), which is managed by the U.S. Agency for Healthcare Research and Quality (AHRQ).
+
+Note: the "2023_MEPS_HC_FYC.xlsx" file from this project's GitHub repository MUST be in the same file path as this file to be used in the below first code block. It can be found and downloaded directly here: https://github.com/jficorilli/DS_340W_Project/blob/main/Project%20Implementation/2023_MEPS_HC_FYC.xlsx
 
 # Loading Packages and MEPS HC FYC Data Files
 
 ```{r, message = FALSE, warning = FALSE, results='hide'}
+# # Install packages from CRAN (if not already installed)
+# install.packages("survey")
+# install.packages("foreign")
+# install.packages("haven")
+# install.packages("tidyverse")
+# install.packages("scales")
+# install.packages("readxl")
+# install.packages("kableExtra")
+# install.packages("quadprog")
+# install.packages("ggcorrplot")
+# install.packages("cowplot")
+# install.packages("haven")
+# install.packages("shapviz")
+# install.packages("fastshap")
+# 
+# # Install packages from GitHub (if not already installed)
+# install.packages("devtools")
+# library(devtools)
+# 
+# devtools::install_github("wuziyueemory/twostageSL")
+# devtools::install_github("e-mitchell/meps_r_pkg/MEPS")
+
+
 library(survey)
-library(foreign)
+library(foreign) 
 library(haven)
 library(tidyverse)
+library(scales)
 library(MEPS)
 library(readxl)
 library(twostageSL)
@@ -22,7 +49,9 @@ library(kableExtra)
 library(quadprog)
 library(ggcorrplot)
 library(cowplot)
-library(iml)
+library(haven)
+library(shapviz)
+library(fastshap)
 
 fyc2023 <- read_xlsx("2023_MEPS_HC_FYC.xlsx") # The 2023 MEPS HC FYC file is sourced from the MEPS HC FYC website, as it was not accessible through the "read_MEPS" function in the "MEPS" package as of 11/13/2025
 fyc2021 <- read_MEPS(year = 2021, type = "FYC")
@@ -42,7 +71,7 @@ cpi_m_2015_2017_2021_2023 <- c(446.752, 475.322, 525.276, 549.084)
 
 # Defining Custom Function(s)
 
-A custom scaled version of squared error loss to handle large matrices and outlier values. This was initially implemented by Wu et al. [1] as it is present in the two-stage SL model architecture and necessary to derive prediction values for the one-stage SL model and two-stage discrete SL from the two-stage SL results. See the supplementary file in the online publication of Wu et al. [1] for additional commentary and justification. The code comments in the following code block follow the conventions used by Wu et al. [1].
+A custom scaled version of squared error loss to handle large matrices and outlier values. This was initially implemented by Wu et al. \[1\] as it is present in the two-stage SL model architecture and necessary to derive prediction values for the one-stage SL model and two-stage discrete SL from the two-stage SL results (accessible as a part of https://github.com/wuziyueemory/Two-stage-SuperLearner/blob/main/MEPS%20data%20analysis/twostageSL.R). See the supplementary file in the online publication of Wu et al. \[1\] for additional commentary and justification. The code comments in the following code block follow the conventions used by Wu et al. \[1\].
 
 ```{r}
 method.CC_LS.scale <- function() {
@@ -125,11 +154,283 @@ method.CC_LS.scale <- function() {
 
 ```
 
+A custom version of the two-stage model prediction function in "predict.twostageSL.R" (https://github.com/wuziyueemory/twostageSL/blob/master/R/predict.twostageSL.R) from the "twostageSL" R package. This custom version makes only one change: changing mentions of "object\$fitLibrary\$stage.single\[\[mm\]\]" to "object\$fitLibrary\$stage.sinlge\[\[mm\]\]". This change was made to match a typo in the "twostageSL()" model's source code, which stopped the prediction function from running in its current state. All other function code and comments are kept from the source code besides the one change. This function is not used for making model predictions in this code (as the two-stage model was retrained each time for prediction to keep coefficients for extracting one-stage and discrete two-stage predictions), but was used in the creation of SHAP values for total expenditures and total out-of-pocket expenditures prediction.
+
+```{r}
+predict_twostageSL_custom <- function(object, newdata, X = NULL, Y = NULL,
+                                 onlySL = FALSE, ...) {
+  if (missing(newdata)) {
+    out <- list(pred = object$SL.predict, library.predict = object$library.predict)
+    return(out)
+  }
+  if (!object$control$saveFitLibrary) {
+    stop("This SuperLearner fit was created using control$saveFitLibrary = FALSE, so new predictions cannot be made.")
+  }
+  N <- dim(object$Z)[[1]]
+  k.stage1 <- object$library.Num$stage1
+  k.stage2 <- object$library.Num$stage2
+  k.singlestage <- object$library.Num$stage.single
+  if (onlySL) {
+    whichLibrary <- which(object$coef > 0)
+    # predictions for only algorithm with coef > 0
+    predY.stage1 <- matrix(NA, nrow = nrow(newdata), ncol = k.stage1)
+    predY.stage2 <- matrix(NA, nrow = nrow(newdata), ncol = k.stage2)
+    predY.singlestage <- matrix(NA, nrow = nrow(newdata), ncol = k.singlestage)
+    # stage 1
+    for (mm in seq(k.stage1)) {
+      newdataMM.stage1 <- subset(newdata,
+                                 select = object$whichScreen$stage1[object$SL.library$library$twostage[mm*k.stage2, 2], ])
+      family.stage1 <- object$family$stage1
+      XMM.stage1 <- if (is.null(X)) {
+        NULL
+      } else {
+        subset(X, select = object$whichScreen$stage1[object$SL.library$library$twostage[mm*k.stage2, 2], ])
+      }
+      predY.stage1[, mm] <- do.call('predict', list(object = object$fitLibrary$stage1[[mm]],
+                                                    newdata = newdataMM.stage1,
+                                                    family = family.stage1,
+                                                    X = XMM.stage1,
+                                                    Y = as.numeric(Y==0)))
+
+    }
+    # stage 2
+    Y.p <- Y[Y>0]
+    for (mm in seq(k.stage2)) {
+      newdataMM.stage2 <- subset(newdata,
+                                 select = object$whichScreen$stage2[object$SL.library$library$twostage[mm, 3], ])
+      family.stage2 <- object$family$stage2
+      XMM.stage2 <- if (is.null(X)) {
+        NULL
+      } else {
+        dat <- cbind(X,Y)
+        X.p <- dat[dat$Y>0,-ncol(dat)]
+        subset(X.p, select = object$whichScreen$stage2[object$SL.library$library$twostage[mm, 3], ])
+      }
+      predY.stage2[, mm] <- do.call('predict', list(object = object$fitLibrary$stage2[[mm]],
+                                                    newdata = newdataMM.stage2,
+                                                    family = family.stage2,
+                                                    X = XMM.stage2,
+                                                    Y = Y.p))
+    }
+    # single stage
+    for (mm in seq(k.singlestage)) {
+      newdataMM.singestage <- subset(newdata,
+                                     select = object$whichScreen$single.stage[object$SL.library$library$singlestage[mm, 2], ])
+      family.singlestage <- object$family$stage.single
+      XMM.singlestage <- if (is.null(X)) {
+        NULL
+      } else {
+        subset(X, select = object$whichScreen$single.stage[object$SL.library$library$singlestage[mm, 2], ])
+      }
+      predY.singlestage[, mm] <- do.call('predict', list(object = object$fitLibrary$stage.single[[mm]],
+                                                         newdata = newdataMM.singestage,
+                                                         family = family.singlestage,
+                                                         X = XMM.singlestage,
+                                                         Y = Y))
+    }
+    # get prediction for 2-stage model
+    predY <- NULL
+    for (i in 1:k.stage1){
+      for (j in 1:k.stage2){
+        pred <- (1-predY.stage1[,i])*predY.stage2[,j]
+        predY <- cbind(predY,pred)
+      }
+    }
+    # combine with prediction from singe-stage model
+    predY <- cbind(predY,predY.singlestage)
+    colnames(predY) <- object$libraryNames
+    getPred <- object$method$computePred(predY = predY, coef = object$coef,
+                                         control = object$control)
+    predY.onlySL <- predY[,whichLibrary]
+    out <- list(pred = getPred, library.predict = predY.onlySL)
+    class(out) <- "predict.twostageSL"
+    out
+  } else {
+    # predictions for all algorithms
+    predY.stage1 <- matrix(NA, nrow = nrow(newdata), ncol = k.stage1)
+    predY.stage2 <- matrix(NA, nrow = nrow(newdata), ncol = k.stage2)
+    predY.singlestage <- matrix(NA, nrow = nrow(newdata), ncol = k.singlestage)
+    # stage 1
+    for (mm in seq(k.stage1)) {
+      newdataMM.stage1 <- subset(newdata,
+                          select = object$whichScreen$stage1[object$SL.library$library$twostage[mm*k.stage2, 2], ])
+      family.stage1 <- object$family$stage1
+      XMM.stage1 <- if (is.null(X)) {
+        NULL
+      } else {
+        subset(X, select = object$whichScreen$stage1[object$SL.library$library$twostage[mm*k.stage2, 2], ])
+      }
+      predY.stage1[, mm] <- do.call('predict', list(object = object$fitLibrary$stage1[[mm]],
+                                             newdata = newdataMM.stage1,
+                                             family = family.stage1,
+                                             X = XMM.stage1,
+                                             Y = as.numeric(Y==0)))
+
+    }
+    # stage 2
+    Y.p <- Y[Y>0]
+    for (mm in seq(k.stage2)) {
+      newdataMM.stage2 <- subset(newdata,
+                                 select = object$whichScreen$stage2[object$SL.library$library$twostage[mm, 3], ])
+      family.stage2 <- object$family$stage2
+      XMM.stage2 <- if (is.null(X)) {
+        NULL
+      } else {
+        dat <- cbind(X,Y)
+        X.p <- dat[dat$Y>0,-ncol(dat)]
+        subset(X.p, select = object$whichScreen$stage2[object$SL.library$library$twostage[mm, 3], ])
+      }
+      predY.stage2[, mm] <- do.call('predict', list(object = object$fitLibrary$stage2[[mm]],
+                                                    newdata = newdataMM.stage2,
+                                                    family = family.stage2,
+                                                    X = XMM.stage2,
+                                                    Y = Y.p))
+    }
+    # single stage
+    for (mm in seq(k.singlestage)) {
+      newdataMM.singestage <- subset(newdata,
+                          select = object$whichScreen$single.stage[object$SL.library$library$singlestage[mm, 2], ])
+      family.singlestage <- object$family$stage.single
+      XMM.singlestage <- if (is.null(X)) {
+        NULL
+      } else {
+        subset(X, select = object$whichScreen$single.stage[object$SL.library$library$singlestage[mm, 2], ])
+      }
+      predY.singlestage[, mm] <- do.call('predict', list(object = object$fitLibrary$stage.sinlge[[mm]], # changed line to fix error in function's GitHub repository code (author wrote "...$stage.single" when it should match a typo "...$stage.sinlge" based on the model's code)
+                                             newdata = newdataMM.singestage,
+                                             family = family.singlestage,
+                                             X = XMM.singlestage,
+                                             Y = Y))
+    }
+    # get prediction for 2-stage model
+    predY <- NULL
+    for (i in 1:k.stage1){
+      for (j in 1:k.stage2){
+        pred <- (1-predY.stage1[,i])*predY.stage2[,j]
+        predY <- cbind(predY,pred)
+      }
+    }
+    # combine with prediction from singe-stage model
+    predY <- cbind(predY,predY.singlestage)
+    colnames(predY) <- object$libraryNames
+    getPred <- object$method$computePred(predY = predY, coef = object$coef,
+                                         control = object$control)
+    out <- list(pred = getPred, library.predict = predY)
+  }
+  # class(out) <- "predict.twostageSL"
+  # cat("Predictions from the two-stage Super Learner:  pred \n\nPrediction for all algorithms in the library:  library.predict\n")
+  out
+}
+```
+
+A two-step function for creating a comparative results data frame for a two-stage SL model object ("tssl_object") and a one-stage SL, discrete two-stage SL, and individual learner algorithms derived from the two-stage SL on newY (unseen validation/testing Y). "newY" must be a vector and match the data set containing the newX used to train the two-stage SL model object. The first step computes predictions for the one-stage SL, discrete two-stage SL, and individual learner algorithms (defined in "library.single()" in the "tssl_object" model definition), primarily following code from Wu et al. [1]. The second step computes MSE, RMSE, R2, and MAE metrics for all comparable models' predictions against "newY".
+
+```{r}
+get_tssl_results_df <- function(tssl_object, newY){
+  # Step 1. Determine results from one-stage SL and discrete two-stage SL (following code from Wu et al. [1])
+
+  # construct one-stage superlearner
+
+  # extract onestage matrix z1
+  z1 <- tssl_object$Z[,(dim(tssl_object$Z)[2] - nrow(tssl_object$SL.library$library$singlestage[1]) + 1):dim(tssl_object$Z)[2]]
+  onestagename <- colnames(tssl_object$library.predict[,(dim(tssl_object$Z)[2] - nrow(tssl_object$SL.library$library$singlestage[1]) + 1):dim(tssl_object$Z)[2]])
+  
+  # get optimum weights for each algorithm in one-stage
+  getCoef <- method.CC_LS.scale()$computeCoef(Z=z1,Y=Train$TOTEXP,libraryNames=onestagename,
+                                                verbose=FALSE)
+  coef_onestage <- getCoef$coef
+  
+  # Prediction for each algorithm in one-stage superlearner
+  predY_onestage <- tssl_object$library.predict[,(dim(tssl_object$Z)[2] - nrow(tssl_object$SL.library$library$singlestage[1]) + 1):dim(tssl_object$Z)[2]]
+  
+  # Compute onestage superlearner predictions on newX.
+  onestage_pred <- tssl_object$method$computePred(predY = predY_onestage, coef = coef_onestage, 
+                                                     control = tssl_object$control)
+  # get discrete two-stage superlearner
+  discrete_pred <- tssl_object$library.predict[,which.min(tssl_object$cvRisk)]
+  
+  
+  # Step 2. Creating results df
+
+  # Store column names
+  column_names <- c(colnames(tssl_object$library.predict), "Two-Stage Super Learner", "One-Stage Super Learner", "Discrete Two-Stage Super Learner")
+  
+  # Remove indicator that all variables were used in the models/no screening algorithms were used ("_All") and fix model names
+  column_names <- sapply(column_names, function(x){gsub("_All", "", x)})
+  column_names <- sapply(column_names, function(x){gsub("SL.", "", x)})
+  column_names <- sapply(column_names, function(x){gsub("xgboost", "XGBoost", x)})
+  column_names <- sapply(column_names, function(x){gsub("randomForest", "Random Forest", x)})
+  column_names <- sapply(column_names, function(x){gsub("glmnet", "LASSO Regression", x)})
+  column_names <- sapply(column_names, function(x){gsub("glm", "Logistic Regression", x)})
+  column_names <- sapply(column_names, function(x){gsub("lm", "Linear Regression", x)})
+  column_names <- sapply(column_names, function(x){gsub("S1: LASSO Regression", "S1: LASSO Linear Regression", x)})
+  column_names <- sapply(column_names, function(x){gsub("S2: LASSO Regression", "S2: LASSO Logistic Regression", x)})
+  column_names <- sapply(column_names, function(x){gsub("Single: LASSO Regression", "Single: LASSO Linear Regression", x)})
+  
+  # Add MSE, RMSE, R2, and MAE values for each algorithm variation in two-stage SL
+  results_df <- data.frame(apply(tssl_object$library.predict, 2, function(pred) {
+    c(
+      mean((newY - pred)^2),
+      sqrt(mean((newY - pred)^2)),
+      1 - (sum((newY - pred)^2) / sum((newY - mean(newY))^2)),
+      mean(abs(newY - pred))
+    )
+  })
+  )
+  
+  # Add two-stage SL results
+  results_df[["two_stage_SL_preds"]] <- c(
+      mean((newY - tssl_object$SL.predict)^2),
+      sqrt(mean((newY - tssl_object$SL.predict)^2)),
+      1 - (sum((newY - tssl_object$SL.predict)^2) / sum((newY - mean(newY))^2)),
+      mean(abs(newY - tssl_object$SL.predict))
+    )
+  
+  
+  # Add one-stage SL results
+  results_df[["one_stage_SL_preds"]] <- c(
+      mean((newY - onestage_pred)^2),
+      sqrt(mean((newY - onestage_pred)^2)),
+      1 - (sum((newY - onestage_pred)^2) / sum((newY - mean(newY))^2)),
+      mean(abs(newY - onestage_pred))
+    )
+  
+  # Add discrete two-stage SL results
+  results_df[["discrete_two_stage_SL_preds"]] <- c(
+      mean((newY - discrete_pred)^2),
+      sqrt(mean((newY - discrete_pred)^2)),
+      1 - (sum((newY - discrete_pred)^2) / sum((newY - mean(newY))^2)),
+      mean(abs(newY - discrete_pred))
+    )
+  
+  # Label rows
+  rownames(results_df) <- c("MSE", "RMSE", "R2", "MAE")
+  
+  # Transpose the table
+  results_df <- data.frame(t(results_df))
+  
+  # Fix the row names
+  rownames(results_df) <- column_names
+  
+  # Arrange the table by highest R2
+  results_df <- results_df %>% arrange(desc(R2))
+  
+  # Format results in non-scientific notation
+  results_df[] <- lapply(results_df, function(x) {
+    if (is.numeric(x)) format(x, scientific = FALSE)
+    else x
+  })
+  
+  # Return the final df
+  return(results_df)
+}
+```
+
 # Data Preprocessing
 
 ## Creating "YEAR" Variables, Standardizing Variable Names Across Years, Adjusting Total and OOP Expenditures to 2023 Dollars (following AHRQ guidelines), then Selecting Relevant Variables
 
-This code section roughly follows the AHRQ-sponsored R guides of pooling MEPS data (https://github.com/HHS-AHRQ/MEPS/blob/master/R/workshop_exercises/exercise_3d.R) available on the AHRQ's GitHub page (https://github.com/HHS-AHRQ/MEPS/tree/master/R). 
+This code section roughly follows the AHRQ-sponsored R guides of pooling MEPS data (https://github.com/HHS-AHRQ/MEPS/blob/master/R/workshop_exercises/exercise_3d.R) available on the AHRQ's GitHub repository page (https://github.com/HHS-AHRQ/MEPS/tree/master/R).
 
 ```{r}
 # Standardizing 2023 data
@@ -264,9 +565,9 @@ pool <- bind_rows(fyc2023p, fyc2021p, fyc2017p, fyc2015p) %>%
   )
 ```
 
-## Filtering Pooled and Data Feature Engineering 
+## Filtering Pooled and Data Feature Engineering
 
-The below filtering of the pooled dataset ensures that the correct population (individuals who were ever diagnosed with breast cancer) are being considered, as well as having valid entries for all relevant regional location, family income (as a % of poverty line), marriage status (as of the 12/31/20## at the end of each data file's respective year) and chronic cormobidity covariates. See the codebook for the 2023 MEPS HC FYC data file (https://meps.ahrq.gov/mepsweb/data_stats/download_data_files_codebook.jsp?PUFId=H251) for translations of variable names used in the 2023 edition, as well as which values could be considered null or invalid for each variable. Also, see the MEPS HC variable explorer (https://datatools.ahrq.gov/meps-hc/) for more information on variable name changes across years. The filtering process reduced the total pooled observation count from N = 114,562 to N = 1,394. 
+The below filtering of the pooled dataset ensures that the correct population (individuals who were ever diagnosed with breast cancer) are being considered, as well as having valid entries for all relevant regional location, family income (as a % of poverty line), marriage status (as of the 12/31/20## at the end of each data file's respective year) and chronic cormobidity covariates. See the codebook for the 2023 MEPS HC FYC data file (https://meps.ahrq.gov/mepsweb/data_stats/download_data_files_codebook.jsp?PUFId=H251) for translations of variable names used in the 2023 edition, as well as which values could be considered null or invalid for each variable. Also, see the MEPS HC variable explorer (https://datatools.ahrq.gov/meps-hc/) for more information on variable name changes across years. The filtering process reduced the total pooled observation count from N = 114,562 to N = 1,394.
 
 ```{r}
 pool_filtered <- pool %>%
@@ -329,20 +630,6 @@ pool_filtered <- pool %>%
     STRKDX = if_else(STRKDX == 1, 1, 0),
     OHRTDX = if_else(OHRTDX == 1, 1, 0),
     
-    # # No need for a reference group in "Other Heart Disease Type" variable - having all zero values indicated having no other heart disease 
-    # OHRTTYPE_HM = if_else(OHRTTYPE == 1, 1, 0),
-    # OHRTTYPE_HA = if_else(OHRTTYPE == 2, 1, 0),
-    # OHRTTYPE_BCA = if_else(OHRTTYPE == 3, 1, 0),
-    # OHRTTYPE_CHF = if_else(OHRTTYPE == 4, 1, 0),
-    # OHRTTYPE_AF = if_else(OHRTTYPE == 5, 1, 0),
-    # OHRTTYPE_MVP = if_else(OHRTTYPE == 6, 1, 0),
-    # OHRTTYPE_EH = if_else(OHRTTYPE == 7, 1, 0),
-    # OHRTTYPE_HVP = if_else(OHRTTYPE == 8, 1, 0),
-    # OHRTTYPE_T = if_else(OHRTTYPE == 9, 1, 0),
-    # OHRTTYPE_B = if_else(OHRTTYPE == 10, 1, 0),
-    # OHRTTYPE_OTHER = if_else(OHRTTYPE == 91, 1, 0),
-    
-    
     # Will leave 2016 out as reference year
     IF_2023 = if_else(YEAR == 2023, 1, 0),
     IF_2021 = if_else(YEAR == 2021, 1, 0),
@@ -375,10 +662,13 @@ pool_filtered <- pool %>%
     UNINSURED_YR = if_else(INSCOV == 3, 1, 0),
   ) %>% 
   
+  # Removing variable labels and ensuring numeric variable types (code line created with ChatGPT)
+  mutate(across(where(is.labelled), ~as.numeric(zap_labels(.x)))) %>%
+  
+  # Removing variables used in feature engineering
   select(!c("RACETHX", "REGION", "MARRIED", "INSCOV", "YEAR"))
 
 ```
-
 
 # Summary Statistics
 
@@ -388,7 +678,7 @@ pool_filtered <- pool %>%
 # Creating data frame of quantitative variable summary stats
 quant_summary_stats_df <- data.frame(
   summary(pool_filtered %>% 
-            select(TOTEXP, TOTSLF, AGE_YE, EDUCYR, POVLEV, IPDIS, OBTOTV, RXTOT)
+            select(TOTEXP, TOTSLF, AGE_YE, EDUCYR, POVLEV, IPDIS, OBTOTV, RXTOT), digits = 8
           )
   ) %>%
   select(-c("Var1")) %>%
@@ -418,20 +708,18 @@ quant_summary_stats_df %>%
   kable_classic(
     full_width = F,
     latex_options = "scale_down"
-    # ,font_size = 8
     )
 ```
-
 
 ```{r}
 # Locally save the quantitative summary statistics table
 # write.csv(quant_summary_stats_df, file = "quant_summary_stats.csv")
 ```
 
-
 ## Qualitative Variables
 
 ```{r}
+# Creating data frame of quantitative variable summary stats
 qual_summary_stats_df <- data.frame(
   variable = colnames(pool_filtered %>% select(!c("TOTEXP", "TOTSLF", "AGE_YE", "EDUCYR", "POVLEV", "IPDIS", "OBTOTV", "RXTOT"))),
   Yes = apply(pool_filtered %>% select(!c("TOTEXP", "TOTSLF", "AGE_YE", "EDUCYR", "POVLEV", "IPDIS", "OBTOTV", "RXTOT")), 2, sum),
@@ -452,7 +740,6 @@ qual_summary_stats_df %>%
   kable_classic(
     full_width = F,
     latex_options = "scale_down"
-    # ,font_size = 8
     )
 ```
 
@@ -476,7 +763,7 @@ pool_final <- pool_filtered %>% select(!c("IF_2015", "RACETHX_WHITE", "REGION_S"
 # Exploratory Data Analysis
 
 ```{r}
-# Correlation heatmap of continous variables
+# Correlation heatmap of continuous variables
 pool_final %>% 
   select(c("TOTEXP", "TOTSLF", "AGE_YE", "EDUCYR", "POVLEV", "IPDIS", "OBTOTV", "RXTOT")) %>%
   cor() %>%
@@ -485,8 +772,8 @@ pool_final %>%
 
 ```{r, message=FALSE}
 # Distribution of two target variables
-plot_grid(ggplot(pool_final, aes(x = TOTEXP)) + geom_histogram(fill = "lightblue", color = "black", binwidth = 5000) + labs(x = "Total Healthcare Expenditures", y = "Count") + theme_bw(),
-          ggplot(pool_final, aes(x = TOTSLF)) + geom_histogram(fill = "lightblue", color = "black", binwidth = 3000) + labs(x = "Total Out-of-Pocket Healthcare Expenditures", y = "Count") + theme_bw())
+plot_grid(ggplot(pool_final, aes(x = TOTEXP)) + geom_histogram(fill = "lightblue", color = "black", binwidth = 7500) + labs(x = "Total Healthcare Expenditures", y = "Count") + theme_bw() + scale_x_continuous(labels = label_dollar()),
+          ggplot(pool_final, aes(x = TOTSLF)) + geom_histogram(fill = "lightblue", color = "black", binwidth = 3000) + labs(x = "Total Out-of-Pocket Healthcare Expenditures", y = "Count") + theme_bw() + scale_x_continuous(labels = label_dollar()))
 ```
 
 ```{r}
@@ -497,13 +784,12 @@ data.frame(target_variable = c("TOTEXP", "TOTSLF"),
   mutate(Total_Percent = zero_values_count / nrow(pool_final))
 ```
 
-
 # Two-Stage Super Learner Modeling Implementation
 
 ## Creating Training/Validation/Testing Split
 
 ```{r}
-# Create train, test, and validation sets using a 70%/20%/10% split
+# Create train, validation, and test sets using a 70%/15%/15% split
 set.seed(321) # setting random seed for reproducibility
 
 # 70/30 initial train/test split
@@ -538,6 +824,10 @@ Test <- Test_temp[-train_ind, ]
 
 ### Validation Set Predictions
 
+The below code block is a fully verbose (verbose = TRUE) running of the two-stage SL model on the validation set for total expenditures prediction. Verbose is set to TRUE to show the complete output for this one instance. Since the result is very long and not necessary to run the model, verbose will be set to FALSE for the test set and predicting OOP expenditures, as well as YAML parameters suppressing some messages from the code output.
+
+**Critical note**: the below code will produce "errors", however this does NOT mean the model does not run. As shown for this code block, the errors only indicate that some models do not converge or experience some other issue that results in their removal from the respective stage of the super learner. Since multiple combinations of algorithms are being considered, some will be removed without stopping the entire sets of algorithms from being considered. The code will still produce a fit model with internal predictions on the validation set.  
+
 ```{r}
 # Reset random seed
 set.seed(321)
@@ -560,84 +850,13 @@ totexp_tssl <- twostageSL(
 ```
 
 ```{r}
-# Evaluate which algorithms were selected in the model's two stages
-totexp_tssl
+# Evaluate which algorithms were selected in the model's two stages (non-zero coefficient = model weight in the two-stage super learner)
+data.frame(totexp_tssl$coef)
 ```
 
 ```{r}
-# Determine results from one-stage SL and discrete two-stage SL (following code from Wu et al.)
-
-# construct one-stage superlearner
-
-# extract onestage matrix z1
-z1 <- totexp_tssl$Z[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]]
-onestagename <- colnames(totexp_tssl$library.predict[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]])
-
-# get optimum weights for each algorithm in one-stage
-getCoef <- method.CC_LS.scale()$computeCoef(Z=z1,Y=Train$TOTEXP,libraryNames=onestagename,
-                                              verbose=FALSE)
-coef_onestage <- getCoef$coef
-
-# Prediction for each algorithm in one-stage superlearner
-predY_onestage <- totexp_tssl$library.predict[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]]
-
-# Compute onestage superlearner predictions on newX.
-onestage_pred <- totexp_tssl$method$computePred(predY = predY_onestage, coef = coef_onestage, 
-                                                   control = totexp_tssl$control)
-# get discrete two-stage superlearner
-discrete_pred <- totexp_tssl$library.predict[,which.min(totexp_tssl$cvRisk)]
-```
-
-```{r}
-# Creating results df for total expenditures prediction on validation set
-
-# Add MSE, RMSE, R2, and MAE values for each algorithm variation in two-stage SL
-validation_results_df_totexp <- data.frame(apply(totexp_tssl$library.predict, 2, function(pred) {
-  c(
-    mean((Validation$TOTEXP - pred)^2),
-    sqrt(mean((Validation$TOTEXP - pred)^2)),
-    1 - (sum((Validation$TOTEXP - pred)^2) / sum((Validation$TOTEXP - mean(Validation$TOTEXP))^2)),
-    mean(abs(Validation$TOTEXP - pred))
-  )
-})
-)
-
-# Add two-stage SL results
-validation_results_df_totexp[["two_stage_SL_preds"]] <- c(
-    mean((Validation$TOTEXP - totexp_tssl$SL.predict)^2),
-    sqrt(mean((Validation$TOTEXP - totexp_tssl$SL.predict)^2)),
-    1 - (sum((Validation$TOTEXP - totexp_tssl$SL.predict)^2) / sum((Validation$TOTEXP - mean(Validation$TOTEXP))^2)),
-    mean(abs(Validation$TOTEXP - totexp_tssl$SL.predict))
-  )
-
-
-# Add one-stage SL results
-validation_results_df_totexp[["one_stage_SL_preds"]] <- c(
-    mean((Validation$TOTEXP - onestage_pred)^2),
-    sqrt(mean((Validation$TOTEXP - onestage_pred)^2)),
-    1 - (sum((Validation$TOTEXP - onestage_pred)^2) / sum((Validation$TOTEXP - mean(Validation$TOTEXP))^2)),
-    mean(abs(Validation$TOTEXP - onestage_pred))
-  )
-
-# Add discrete two-stage SL results
-validation_results_df_totexp[["discrete_two_stage_SL_preds"]] <- c(
-    mean((Validation$TOTEXP - discrete_pred)^2),
-    sqrt(mean((Validation$TOTEXP - discrete_pred)^2)),
-    1 - (sum((Validation$TOTEXP - discrete_pred)^2) / sum((Validation$TOTEXP - mean(Validation$TOTEXP))^2)),
-    mean(abs(Validation$TOTEXP - discrete_pred))
-  )
-
-# Label rows
-rownames(validation_results_df_totexp) <- c("MSE", "RMSE", "R2", "MAE")
-
-# Organize the table by lowest R2
-validation_results_df_totexp <- data.frame(t(validation_results_df_totexp)) %>% arrange(desc(R2))
-
-# Format results in non-scientific notation
-validation_results_df_totexp[] <- lapply(validation_results_df_totexp, function(x) {
-  if (is.numeric(x)) format(x, scientific = FALSE)
-  else x
-})
+# Use custom function to get comparative results data frame
+validation_results_df_totexp <- get_tssl_results_df(tssl_object = totexp_tssl, newY = Validation$TOTEXP)
 ```
 
 ```{r}
@@ -645,10 +864,13 @@ validation_results_df_totexp[] <- lapply(validation_results_df_totexp, function(
 # write.csv(validation_results_df_totexp, file = "validation_results_df_totexp.csv")
 ```
 
+
 ### Test Set Predictions
 
+**Critical note**: the below code will produce "errors", however this does NOT mean the model does not run. As shown above for the TOTEXP validation set prediction code block, the errors only indicate that some models do not converge or experience some other issue that results in their removal from the respective stage of the super learner. Since multiple combinations of algorithms are being considered, some will be removed without stopping the entire sets of algorithms from being considered. The code will still produce a fit model with internal predictions on the testing set. Warnings and excess output have been suppressed using YAML parameters and verbose = FALSE in the model definition.
+
 ```{r, error = FALSE, message = FALSE, warning = FALSE}
-# Re-training model to predict on unseen test set (no native "predict" function)
+# Re-training model to predict on unseen test set (no working native "predict()" function)
 
 # Reset random seed
 set.seed(321)
@@ -671,85 +893,13 @@ totexp_tssl <- twostageSL(
 ```
 
 ```{r}
-# Evaluate which algorithms were selected in the model's two stages (should be the same as the validation section)
-totexp_tssl
+# Evaluate which algorithms were selected in the model's two stages (non-zero coefficient = model weight in the two-stage super learner -> should match the earlier coefficients from predicting on the validation set)
+data.frame(totexp_tssl$coef)
 ```
 
 ```{r}
-# Determine results from one-stage SL and discrete two-stage SL (following code from Wu et al.)
-
-# construct one-stage superlearner
-
-# extract onestage matrix z1
-z1 <- totexp_tssl$Z[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]]
-onestagename <- colnames(totexp_tssl$library.predict[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]])
-
-# get optimum weights for each algorithm in one-stage
-getCoef <- method.CC_LS.scale()$computeCoef(Z=z1,Y=Train$TOTEXP,libraryNames=onestagename,
-                                              verbose=FALSE)
-coef_onestage <- getCoef$coef
-
-# Prediction for each algorithm in one-stage superlearner
-predY_onestage <- totexp_tssl$library.predict[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]]
-
-# Compute onestage superlearner predictions on newX.
-onestage_pred <- totexp_tssl$method$computePred(predY = predY_onestage, coef = coef_onestage, 
-                                                   control = totexp_tssl$control)
-# get discrete two-stage superlearner
-discrete_pred <- totexp_tssl$library.predict[,which.min(totexp_tssl$cvRisk)]
-```
-
-
-```{r}
-# Creating results df for total expenditures prediction
-
-# Add MSE, RMSE, R2, and MAE values for each algorithm variation in two-stage SL
-final_results_df_totexp <- data.frame(apply(totexp_tssl$library.predict, 2, function(pred) {
-  c(
-    mean((Test$TOTEXP - pred)^2),
-    sqrt(mean((Test$TOTEXP - pred)^2)),
-    1 - (sum((Test$TOTEXP - pred)^2) / sum((Test$TOTEXP - mean(Test$TOTEXP))^2)),
-    mean(abs(Test$TOTEXP - pred))
-  )
-})
-)
-
-# Add two-stage SL results
-final_results_df_totexp[["two_stage_SL_preds"]] <- c(
-    mean((Test$TOTEXP - totexp_tssl$SL.predict)^2),
-    sqrt(mean((Test$TOTEXP - totexp_tssl$SL.predict)^2)),
-    1 - (sum((Test$TOTEXP - totexp_tssl$SL.predict)^2) / sum((Test$TOTEXP - mean(Test$TOTEXP))^2)),
-    mean(abs(Test$TOTEXP - totexp_tssl$SL.predict))
-  )
-
-
-# Add one-stage SL results
-final_results_df_totexp[["one_stage_SL_preds"]] <- c(
-    mean((Test$TOTEXP - onestage_pred)^2),
-    sqrt(mean((Test$TOTEXP - onestage_pred)^2)),
-    1 - (sum((Test$TOTEXP - onestage_pred)^2) / sum((Test$TOTEXP - mean(Test$TOTEXP))^2)),
-    mean(abs(Test$TOTEXP - onestage_pred))
-  )
-
-# Add discrete two-stage SL results
-final_results_df_totexp[["discrete_two_stage_SL_preds"]] <- c(
-    mean((Test$TOTEXP - discrete_pred)^2),
-    sqrt(mean((Test$TOTEXP - discrete_pred)^2)),
-    1 - (sum((Test$TOTEXP - discrete_pred)^2) / sum((Test$TOTEXP - mean(Test$TOTEXP))^2)),
-    mean(abs(Test$TOTEXP - discrete_pred))
-  )
-
-# Label rows
-rownames(final_results_df_totexp) <- c("MSE", "RMSE", "R2", "MAE")
-
-# Organize the table by lowest R2
-final_results_df_totexp <- data.frame(t(final_results_df_totexp)) %>% arrange(desc(R2))
-
-# Format results in non-scientific notation
-final_results_df_totexp[] <- lapply(final_results_df_totexp, function(x) {
-  if (is.numeric(x)) format(x, scientific = FALSE)
-  else x
-})
+# Use custom function to get comparative results data frame
+final_results_df_totexp <- get_tssl_results_df(tssl_object = totexp_tssl, newY = Test$TOTEXP)
 ```
 
 ```{r}
@@ -760,6 +910,8 @@ final_results_df_totexp[] <- lapply(final_results_df_totexp, function(x) {
 ## Total OOP Expenditures Prediction
 
 ### Validation Set Predictions
+
+**Critical note**: the below code will produce "errors", however this does NOT mean the model does not run. As shown above for the TOTEXP validation set prediction code block, the errors only indicate that some models do not converge or experience some other issue that results in their removal from the respective stage of the super learner. Since multiple combinations of algorithms are being considered, some will be removed without stopping the entire sets of algorithms from being considered. The code will still produce a fit model with internal predictions on the validation set. Warnings and excess output have been suppressed using YAML parameters and verbose = FALSE in the model definition.
 
 ```{r, message = FALSE, warning = FALSE}
 # Reset random seed
@@ -783,83 +935,13 @@ totslf_tssl <- twostageSL(
 ```
 
 ```{r}
-# Evaluate which algorithms were selected in the model's two stages
-totslf_tssl
+# Evaluate which algorithms were selected in the model's two stages (non-zero coefficient = model weight in the two-stage super learner)
+data.frame(totslf_tssl$coef)
 ```
 
-
 ```{r}
-# construct one-stage superlearner
-
-# extract onestage matrix z1
-z1 <- totslf_tssl$Z[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]]
-onestagename <- colnames(totslf_tssl$library.predict[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]])
-
-# get optimum weights for each algorithm in one-stage
-getCoef <- method.CC_LS.scale()$computeCoef(Z=z1,Y=Train$TOTEXP,libraryNames=onestagename,
-                                              verbose=FALSE)
-coef_onestage <- getCoef$coef
-
-# Prediction for each algorithm in one-stage superlearner
-predY_onestage <- totslf_tssl$library.predict[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]]
-
-# Compute onestage superlearner predictions on newX.
-onestage_pred <- totslf_tssl$method$computePred(predY = predY_onestage, coef = coef_onestage, 
-                                                   control = totslf_tssl$control)
-# get discrete two-stage superlearner
-discrete_pred <- totslf_tssl$library.predict[,which.min(totslf_tssl$cvRisk)]
-```
-
-
-```{r}
-# Creating results df for total OOP expenditures prediction
-
-# Add MSE, RMSE, R2, and MAE values for each algorithm variation in two-stage SL
-validation_results_df_totslf <- data.frame(apply(totslf_tssl$library.predict, 2, function(pred) {
-  c(
-    mean((Validation$TOTSLF - pred)^2),
-    sqrt(mean((Validation$TOTSLF - pred)^2)),
-    1 - (sum((Validation$TOTSLF - pred)^2) / sum((Validation$TOTSLF - mean(Validation$TOTSLF))^2)),
-    mean(abs(Validation$TOTSLF - pred))
-  )
-})
-)
-
-# Add two-stage SL results
-validation_results_df_totslf[["two_stage_SL_preds"]] <- c(
-    mean((Validation$TOTSLF - totslf_tssl$SL.predict)^2),
-    sqrt(mean((Validation$TOTSLF - totslf_tssl$SL.predict)^2)),
-    1 - (sum((Validation$TOTSLF - totslf_tssl$SL.predict)^2) / sum((Validation$TOTSLF - mean(Validation$TOTSLF))^2)),
-    mean(abs(Validation$TOTSLF - totslf_tssl$SL.predict))
-  )
-
-# Add one-stage SL results
-validation_results_df_totslf[["one_stage_SL_preds"]] <- c(
-    mean((Validation$TOTSLF - onestage_pred)^2),
-    sqrt(mean((Validation$TOTSLF - onestage_pred)^2)),
-    1 - (sum((Validation$TOTSLF - onestage_pred)^2) / sum((Validation$TOTSLF - mean(Validation$TOTSLF))^2)),
-    mean(abs(Validation$TOTSLF - onestage_pred))
-  )
-
-# Add discrete two-stage SL results
-validation_results_df_totslf[["discrete_two_stage_SL_preds"]] <- c(
-    mean((Validation$TOTSLF - discrete_pred)^2),
-    sqrt(mean((Validation$TOTSLF - discrete_pred)^2)),
-    1 - (sum((Validation$TOTSLF - discrete_pred)^2) / sum((Validation$TOTSLF - mean(Validation$TOTSLF))^2)),
-    mean(abs(Validation$TOTSLF - discrete_pred))
-  )
-
-# Label rows
-rownames(validation_results_df_totslf) <- c("MSE", "RMSE", "R2", "MAE")
-
-# Organize the table by lowest R2
-validation_results_df_totslf <- data.frame(t(validation_results_df_totslf)) %>% arrange(desc(R2))
-
-# Format results in non-scientific notation
-validation_results_df_totslf[] <- lapply(validation_results_df_totslf, function(x) {
-  if (is.numeric(x)) format(x, scientific = FALSE)
-  else x
-})
+# Use custom function to get comparative results data frame
+validation_results_df_totslf <- get_tssl_results_df(tssl_object = totslf_tssl, newY = Validation$TOTSLF)
 ```
 
 ```{r}
@@ -869,11 +951,13 @@ validation_results_df_totslf[] <- lapply(validation_results_df_totslf, function(
 
 ### Test Set Predictions
 
+**Critical note**: the below code will produce "errors", however this does NOT mean the model does not run. As shown above for the TOTEXP validation set prediction code block, the errors only indicate that some models do not converge or experience some other issue that results in their removal from the respective stage of the super learner. Since multiple combinations of algorithms are being considered, some will be removed without stopping the entire sets of algorithms from being considered. The code will still produce a fit model with internal predictions on the testing set. Warnings and excess output have been suppressed using YAML parameters and verbose = FALSE in the model definition.
+
 ```{r,  message = FALSE, warning = FALSE}
 # Reset random seed
 set.seed(321)
 
-# Train model on training data and predict on test set 
+# Re-training model to predict on unseen test set (no working native "predict()" function) 
 totslf_tssl <- twostageSL(
   Y = Train$TOTSLF,
   X = Train %>% select(!c("TOTEXP", "TOTSLF")),
@@ -891,82 +975,13 @@ totslf_tssl <- twostageSL(
 ```
 
 ```{r}
-# Evaluate which algorithms were selected in the model's two stages
-totslf_tssl
+# Evaluate which algorithms were selected in the model's two stages (non-zero coefficient = model weight in the two-stage super learner -> should match the earlier coefficients from predicting on the validation set)
+data.frame(totslf_tssl$coef)
 ```
 
 ```{r}
-# construct one-stage superlearner
-
-# extract onestage matrix z1
-z1 <- totslf_tssl$Z[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]]
-onestagename <- colnames(totslf_tssl$library.predict[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]])
-
-# get optimum weights for each algorithm in one-stage
-getCoef <- method.CC_LS.scale()$computeCoef(Z=z1,Y=Train$TOTEXP,libraryNames=onestagename,
-                                              verbose=FALSE)
-coef_onestage <- getCoef$coef
-
-# Prediction for each algorithm in one-stage superlearner
-predY_onestage <- totslf_tssl$library.predict[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]]
-
-# Compute onestage superlearner predictions on newX.
-onestage_pred <- totslf_tssl$method$computePred(predY = predY_onestage, coef = coef_onestage, 
-                                                   control = totslf_tssl$control)
-# get discrete two-stage superlearner
-discrete_pred <- totslf_tssl$library.predict[,which.min(totslf_tssl$cvRisk)]
-```
-
-
-```{r}
-# Creating results df for total OOP expenditures prediction
-
-# Add MSE, RMSE, R2, and MAE values for each algorithm variation in two-stage SL
-final_results_df_totslf <- data.frame(apply(totslf_tssl$library.predict, 2, function(pred) {
-  c(
-    mean((Test$TOTSLF - pred)^2),
-    sqrt(mean((Test$TOTSLF - pred)^2)),
-    1 - (sum((Test$TOTSLF - pred)^2) / sum((Test$TOTSLF - mean(Test$TOTSLF))^2)),
-    mean(abs(Test$TOTSLF - pred))
-  )
-})
-)
-
-# Add two-stage SL results
-final_results_df_totslf[["two_stage_SL_preds"]] <- c(
-    mean((Test$TOTSLF - totslf_tssl$SL.predict)^2),
-    sqrt(mean((Test$TOTSLF - totslf_tssl$SL.predict)^2)),
-    1 - (sum((Test$TOTSLF - totslf_tssl$SL.predict)^2) / sum((Test$TOTSLF - mean(Test$TOTSLF))^2)),
-    mean(abs(Test$TOTSLF - totslf_tssl$SL.predict))
-  )
-
-# Add one-stage SL results
-final_results_df_totslf[["one_stage_SL_preds"]] <- c(
-    mean((Test$TOTSLF - onestage_pred)^2),
-    sqrt(mean((Test$TOTSLF - onestage_pred)^2)),
-    1 - (sum((Test$TOTSLF - onestage_pred)^2) / sum((Test$TOTSLF - mean(Test$TOTSLF))^2)),
-    mean(abs(Test$TOTSLF - onestage_pred))
-  )
-
-# Add discrete two-stage SL results
-final_results_df_totslf[["discrete_two_stage_SL_preds"]] <- c(
-    mean((Test$TOTSLF - discrete_pred)^2),
-    sqrt(mean((Test$TOTSLF - discrete_pred)^2)),
-    1 - (sum((Test$TOTSLF - discrete_pred)^2) / sum((Test$TOTSLF - mean(Test$TOTSLF))^2)),
-    mean(abs(Test$TOTSLF - discrete_pred))
-  )
-
-# Label rows
-rownames(final_results_df_totslf) <- c("MSE", "RMSE", "R2", "MAE")
-
-# Organize the table by lowest R2
-final_results_df_totslf <- data.frame(t(final_results_df_totslf)) %>% arrange(desc(R2))
-
-# Format results in non-scientific notation
-final_results_df_totslf[] <- lapply(final_results_df_totslf, function(x) {
-  if (is.numeric(x)) format(x, scientific = FALSE)
-  else x
-})
+# Use custom function to get comparative results data frame
+final_results_df_totslf <- get_tssl_results_df(tssl_object = totslf_tssl, newY = Test$TOTSLF)
 ```
 
 ```{r}
@@ -976,6 +991,8 @@ final_results_df_totslf[] <- lapply(final_results_df_totslf, function(x) {
 
 ## View Final Results Tables
 
+The below tables are the main results tables from this project.
+
 ```{r}
 final_results_df_totexp %>% View()
 ```
@@ -984,22 +1001,95 @@ final_results_df_totexp %>% View()
 final_results_df_totslf %>% View()
 ```
 
-
 # SHAP Values Implementation
+
+The below SHapley Additive exPlanation (SHAP) values and visualizations represent feature contributions across the entire two-stage SL model variations. They do not consider contributions to predictions in stage 1 or stage 2, only the overall final prediction (which is a product of stage 1 and 2 predictions itself). This code was also mostly generated by ChatGPT, as I did not know how to implement SHAP values using "fastshap" and "shapviz" before this project.
+
+```{r}
+# Wrapper function for passing two-stage SL predictions to fastshap::explain()
+pred_twostage <- function(object, newdata) {
+  out <- predict_twostageSL_custom(object, newdata)$pred # using custom tssl prediction function
+  
+  if (!is.numeric(out)) {
+    stop("predict() returned non-numeric output") # handling non-numeric predictions
+  }
+
+  as.numeric(out)
+}
+```
+
+
+Note: the "totexp_tssl" and "totslf_tssl" models used for the SHAP values creation must be the models trained in the above sections, not from the later sensitivity analyses in the following section, which overwrite the model definitions.
 
 ## Total Expenditures
 
-[In progress]
+```{r}
+# Set random seed to same as used in the prior modeling results
+set.seed(321)
+
+# Create SHAP values
+totexp_shap_values <- explain(
+  object       = totexp_tssl,
+  X            = as.data.frame(Train %>% select(!c("TOTEXP", "TOTSLF"))),
+  newdata      = as.data.frame(Test %>% select(!c("TOTEXP", "TOTSLF"))) ,
+  pred_wrapper = pred_twostage,
+  nsim         = 100,
+  adjust       = TRUE
+)
+
+```
+
+```{r}
+# Create shapviz object from SHAP values
+sv_totexp <- shapviz(
+  totexp_shap_values,
+  X = as.data.frame(Test %>% select(!c("TOTEXP", "TOTSLF"))),
+  baseline = attr(totexp_shap_values, "baseline")
+)
+
+# Create Beeswarm plot
+sv_importance(sv_totexp, kind = "beeswarm")
+```
 
 ## Total OOP Expenditure
 
-[In progress]
+```{r}
+# Set random seed to same as used in the prior modeling results
+set.seed(321)
+
+# Creating SHAP values
+totslf_shap_values <- explain(
+  object       = totslf_tssl,
+  X            = as.data.frame(Train %>% select(!c("TOTEXP", "TOTSLF"))),
+  newdata      = as.data.frame(Test %>% select(!c("TOTEXP", "TOTSLF"))) ,
+  pred_wrapper = pred_twostage,
+  nsim         = 100,
+  adjust       = TRUE
+)
+
+```
+
+```{r}
+# Creating shapviz object from SHAP values
+sv_totslf <- shapviz(
+  totslf_shap_values,
+  X = as.data.frame(Test %>% select(!c("TOTEXP", "TOTSLF"))),
+  baseline = attr(totexp_shap_values, "baseline")
+)
+
+# Creating beeswarm plot
+sv_importance(sv_totslf, kind = "beeswarm")
+```
 
 # Sensitivity Analysis
+
+The below sensitivity analysis tests the effect of removing the chronic comorbidity covariates on predictions for total expenditures and total out-of-pocket expenditures in a given year. The results tables from these model variations have a "_SA" suffix to differentiate their results from the regular modeling above.
 
 ## Total Expenditures Prediction
 
 ### Validation Set Predictions
+
+**Critical note**: the below code will produce "errors", however this does NOT mean the model does not run. As shown above for the TOTEXP validation set prediction code block, the errors only indicate that some models do not converge or experience some other issue that results in their removal from the respective stage of the super learner. Since multiple combinations of algorithms are being considered, some will be removed without stopping the entire sets of algorithms from being considered. The code will still produce a fit model with internal predictions on the validation set. Warnings and excess output have been suppressed using YAML parameters and verbose = FALSE in the model definition.
 
 ```{r, message = FALSE, warning = FALSE}
 # Reset random seed
@@ -1024,86 +1114,14 @@ totexp_tssl <- twostageSL(
 ```
 
 ```{r}
-# Evaluate which algorithms were selected in the model's two stages
-totexp_tssl
+# Evaluate which algorithms were selected in the model's two stages (non-zero coefficient = model weight in the two-stage super learner)
+data.frame(totexp_tssl$coef)
 ```
 
 ```{r}
-# Determine results from one-stage SL and discrete two-stage SL (following code from Wu et al.)
-
-# construct one-stage superlearner
-
-# extract onestage matrix z1
-z1 <- totexp_tssl$Z[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]]
-onestagename <- colnames(totexp_tssl$library.predict[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]])
-
-# get optimum weights for each algorithm in one-stage
-getCoef <- method.CC_LS.scale()$computeCoef(Z=z1,Y=Train$TOTEXP,libraryNames=onestagename,
-                                              verbose=FALSE)
-coef_onestage <- getCoef$coef
-
-# Prediction for each algorithm in one-stage superlearner
-predY_onestage <- totexp_tssl$library.predict[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]]
-
-# Compute onestage superlearner predictions on newX.
-onestage_pred <- totexp_tssl$method$computePred(predY = predY_onestage, coef = coef_onestage, 
-                                                   control = totexp_tssl$control)
-# get discrete two-stage superlearner
-discrete_pred <- totexp_tssl$library.predict[,which.min(totexp_tssl$cvRisk)]
+# Use custom function to get comparative results data frame
+validation_results_df_totexp_SA <- get_tssl_results_df(tssl_object = totexp_tssl, newY = Validation$TOTEXP)
 ```
-
-```{r}
-# Creating results df for total expenditures prediction on validation set
-
-# Add MSE, RMSE, R2, and MAE values for each algorithm variation in two-stage SL
-validation_results_df_totexp_SA <- data.frame(apply(totexp_tssl$library.predict, 2, function(pred) {
-  c(
-    mean((Validation$TOTEXP - pred)^2),
-    sqrt(mean((Validation$TOTEXP - pred)^2)),
-    1 - (sum((Validation$TOTEXP - pred)^2) / sum((Validation$TOTEXP - mean(Validation$TOTEXP))^2)),
-    mean(abs(Validation$TOTEXP - pred))
-  )
-})
-)
-
-# Add two-stage SL results
-validation_results_df_totexp_SA[["two_stage_SL_preds"]] <- c(
-    mean((Validation$TOTEXP - totexp_tssl$SL.predict)^2),
-    sqrt(mean((Validation$TOTEXP - totexp_tssl$SL.predict)^2)),
-    1 - (sum((Validation$TOTEXP - totexp_tssl$SL.predict)^2) / sum((Validation$TOTEXP - mean(Validation$TOTEXP))^2)),
-    mean(abs(Validation$TOTEXP - totexp_tssl$SL.predict))
-  )
-
-
-# Add one-stage SL results
-validation_results_df_totexp_SA[["one_stage_SL_preds"]] <- c(
-    mean((Validation$TOTEXP - onestage_pred)^2),
-    sqrt(mean((Validation$TOTEXP - onestage_pred)^2)),
-    1 - (sum((Validation$TOTEXP - onestage_pred)^2) / sum((Validation$TOTEXP - mean(Validation$TOTEXP))^2)),
-    mean(abs(Validation$TOTEXP - onestage_pred))
-  )
-
-# Add discrete two-stage SL results
-validation_results_df_totexp_SA[["discrete_two_stage_SL_preds"]] <- c(
-    mean((Validation$TOTEXP - discrete_pred)^2),
-    sqrt(mean((Validation$TOTEXP - discrete_pred)^2)),
-    1 - (sum((Validation$TOTEXP - discrete_pred)^2) / sum((Validation$TOTEXP - mean(Validation$TOTEXP))^2)),
-    mean(abs(Validation$TOTEXP - discrete_pred))
-  )
-
-# Label rows
-rownames(validation_results_df_totexp_SA) <- c("MSE", "RMSE", "R2", "MAE")
-
-# Organize the table by lowest R2
-validation_results_df_totexp_SA <- data.frame(t(validation_results_df_totexp_SA)) %>% arrange(desc(R2))
-
-# Format results in non-scientific notation
-validation_results_df_totexp_SA[] <- lapply(validation_results_df_totexp_SA, function(x) {
-  if (is.numeric(x)) format(x, scientific = FALSE)
-  else x
-})
-```
-
 
 ```{r}
 # Locally save the results table
@@ -1112,13 +1130,15 @@ validation_results_df_totexp_SA[] <- lapply(validation_results_df_totexp_SA, fun
 
 ### Test Set Predictions
 
+**Critical note**: the below code will produce "errors", however this does NOT mean the model does not run. As shown above for the TOTEXP validation set prediction code block, the errors only indicate that some models do not converge or experience some other issue that results in their removal from the respective stage of the super learner. Since multiple combinations of algorithms are being considered, some will be removed without stopping the entire sets of algorithms from being considered. The code will still produce a fit model with internal predictions on the testing set. Warnings and excess output have been suppressed using YAML parameters and verbose = FALSE in the model definition.
+
 ```{r, message = FALSE, warning = FALSE}
 # Re-training model to predict on unseen test set (no native "predict" function)
 
 # Reset random seed
 set.seed(321)
 
-# Re-train model and predict on test set
+# Re-training model to predict on unseen test set (no working native "predict()" function)
 totexp_tssl <- twostageSL(
   Y = Train$TOTEXP,
   X = Train %>% select(!c("TOTEXP", "TOTSLF", "DIABDX", "HIBPDX", "ANGIDX", "ARTHDX", "ASTHDX", "CABLADDR", "CACERVIX", "CACOLON", "CALUNG", "CALYMPH", "CAMELANO", "CASKINDK", "CASKINNM", "CAUTERUS", "CHDDX", "CHOLDX", "EMPHDX", "MIDX", "OHRTDX")),
@@ -1136,85 +1156,13 @@ totexp_tssl <- twostageSL(
 ```
 
 ```{r}
-# Evaluate which algorithms were selected in the model's two stages (should be the same as the validation section)
-totexp_tssl
+# Evaluate which algorithms were selected in the model's two stages (non-zero coefficient = model weight in the two-stage super learner -> should match the earlier coefficients from predicting on the validation set)
+data.frame(totexp_tssl$coef)
 ```
 
 ```{r}
-# Determine results from one-stage SL and discrete two-stage SL (following code from Wu et al.)
-
-# construct one-stage superlearner
-
-# extract onestage matrix z1
-z1 <- totexp_tssl$Z[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]]
-onestagename <- colnames(totexp_tssl$library.predict[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]])
-
-# get optimum weights for each algorithm in one-stage
-getCoef <- method.CC_LS.scale()$computeCoef(Z=z1,Y=Train$TOTEXP,libraryNames=onestagename,
-                                              verbose=FALSE)
-coef_onestage <- getCoef$coef
-
-# Prediction for each algorithm in one-stage superlearner
-predY_onestage <- totexp_tssl$library.predict[,(dim(totexp_tssl$Z)[2] - nrow(totexp_tssl$SL.library$library$singlestage[1]) + 1):dim(totexp_tssl$Z)[2]]
-
-# Compute onestage superlearner predictions on newX.
-onestage_pred <- totexp_tssl$method$computePred(predY = predY_onestage, coef = coef_onestage, 
-                                                   control = totexp_tssl$control)
-# get discrete two-stage superlearner
-discrete_pred <- totexp_tssl$library.predict[,which.min(totexp_tssl$cvRisk)]
-```
-
-
-```{r}
-# Creating results df for total expenditures prediction
-
-# Add MSE, RMSE, R2, and MAE values for each algorithm variation in two-stage SL
-final_results_df_totexp_SA <- data.frame(apply(totexp_tssl$library.predict, 2, function(pred) {
-  c(
-    mean((Test$TOTEXP - pred)^2),
-    sqrt(mean((Test$TOTEXP - pred)^2)),
-    1 - (sum((Test$TOTEXP - pred)^2) / sum((Test$TOTEXP - mean(Test$TOTEXP))^2)),
-    mean(abs(Test$TOTEXP - pred))
-  )
-})
-)
-
-# Add two-stage SL results
-final_results_df_totexp_SA[["two_stage_SL_preds"]] <- c(
-    mean((Test$TOTEXP - totexp_tssl$SL.predict)^2),
-    sqrt(mean((Test$TOTEXP - totexp_tssl$SL.predict)^2)),
-    1 - (sum((Test$TOTEXP - totexp_tssl$SL.predict)^2) / sum((Test$TOTEXP - mean(Test$TOTEXP))^2)),
-    mean(abs(Test$TOTEXP - totexp_tssl$SL.predict))
-  )
-
-
-# Add one-stage SL results
-final_results_df_totexp_SA[["one_stage_SL_preds"]] <- c(
-    mean((Test$TOTEXP - onestage_pred)^2),
-    sqrt(mean((Test$TOTEXP - onestage_pred)^2)),
-    1 - (sum((Test$TOTEXP - onestage_pred)^2) / sum((Test$TOTEXP - mean(Test$TOTEXP))^2)),
-    mean(abs(Test$TOTEXP - onestage_pred))
-  )
-
-# Add discrete two-stage SL results
-final_results_df_totexp_SA[["discrete_two_stage_SL_preds"]] <- c(
-    mean((Test$TOTEXP - discrete_pred)^2),
-    sqrt(mean((Test$TOTEXP - discrete_pred)^2)),
-    1 - (sum((Test$TOTEXP - discrete_pred)^2) / sum((Test$TOTEXP - mean(Test$TOTEXP))^2)),
-    mean(abs(Test$TOTEXP - discrete_pred))
-  )
-
-# Label rows
-rownames(final_results_df_totexp_SA) <- c("MSE", "RMSE", "R2", "MAE")
-
-# Organize the table by lowest R2
-final_results_df_totexp_SA <- data.frame(t(final_results_df_totexp_SA)) %>% arrange(desc(R2))
-
-# Format results in non-scientific notation
-final_results_df_totexp_SA[] <- lapply(final_results_df_totexp_SA, function(x) {
-  if (is.numeric(x)) format(x, scientific = FALSE)
-  else x
-})
+# Use custom function to get comparative results data frame
+final_results_df_totexp_SA <- get_tssl_results_df(tssl_object = totexp_tssl, newY = Test$TOTEXP)
 ```
 
 ```{r}
@@ -1225,6 +1173,8 @@ final_results_df_totexp_SA[] <- lapply(final_results_df_totexp_SA, function(x) {
 ## Total OOP Expenditures Prediction
 
 ### Validation Set Predictions
+
+**Critical note**: the below code will produce "errors", however this does NOT mean the model does not run. As shown above for the TOTEXP validation set prediction code block, the errors only indicate that some models do not converge or experience some other issue that results in their removal from the respective stage of the super learner. Since multiple combinations of algorithms are being considered, some will be removed without stopping the entire sets of algorithms from being considered. The code will still produce a fit model with internal predictions on the validation set. Warnings and excess output have been suppressed using YAML parameters and verbose = FALSE in the model definition.
 
 ```{r, message = FALSE, warning = FALSE}
 # Reset random seed
@@ -1248,83 +1198,13 @@ totslf_tssl <- twostageSL(
 ```
 
 ```{r}
-# Evaluate which algorithms were selected in the model's two stages
-totslf_tssl
+# Evaluate which algorithms were selected in the model's two stages (non-zero coefficient = model weight in the two-stage super learner)
+data.frame(totslf_tssl$coef)
 ```
 
-
 ```{r}
-# construct one-stage superlearner
-
-# extract onestage matrix z1
-z1 <- totslf_tssl$Z[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]]
-onestagename <- colnames(totslf_tssl$library.predict[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]])
-
-# get optimum weights for each algorithm in one-stage
-getCoef <- method.CC_LS.scale()$computeCoef(Z=z1,Y=Train$TOTEXP,libraryNames=onestagename,
-                                              verbose=FALSE)
-coef_onestage <- getCoef$coef
-
-# Prediction for each algorithm in one-stage superlearner
-predY_onestage <- totslf_tssl$library.predict[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]]
-
-# Compute onestage superlearner predictions on newX.
-onestage_pred <- totslf_tssl$method$computePred(predY = predY_onestage, coef = coef_onestage, 
-                                                   control = totslf_tssl$control)
-# get discrete two-stage superlearner
-discrete_pred <- totslf_tssl$library.predict[,which.min(totslf_tssl$cvRisk)]
-```
-
-
-```{r}
-# Creating results df for total OOP expenditures prediction
-
-# Add MSE, RMSE, R2, and MAE values for each algorithm variation in two-stage SL
-validation_results_df_totslf_SA <- data.frame(apply(totslf_tssl$library.predict, 2, function(pred) {
-  c(
-    mean((Validation$TOTSLF - pred)^2),
-    sqrt(mean((Validation$TOTSLF - pred)^2)),
-    1 - (sum((Validation$TOTSLF - pred)^2) / sum((Validation$TOTSLF - mean(Validation$TOTSLF))^2)),
-    mean(abs(Validation$TOTSLF - pred))
-  )
-})
-)
-
-# Add two-stage SL results
-validation_results_df_totslf_SA[["two_stage_SL_preds"]] <- c(
-    mean((Validation$TOTSLF - totslf_tssl$SL.predict)^2),
-    sqrt(mean((Validation$TOTSLF - totslf_tssl$SL.predict)^2)),
-    1 - (sum((Validation$TOTSLF - totslf_tssl$SL.predict)^2) / sum((Validation$TOTSLF - mean(Validation$TOTSLF))^2)),
-    mean(abs(Validation$TOTSLF - totslf_tssl$SL.predict))
-  )
-
-# Add one-stage SL results
-validation_results_df_totslf_SA[["one_stage_SL_preds"]] <- c(
-    mean((Validation$TOTSLF - onestage_pred)^2),
-    sqrt(mean((Validation$TOTSLF - onestage_pred)^2)),
-    1 - (sum((Validation$TOTSLF - onestage_pred)^2) / sum((Validation$TOTSLF - mean(Validation$TOTSLF))^2)),
-    mean(abs(Validation$TOTSLF - onestage_pred))
-  )
-
-# Add discrete two-stage SL results
-validation_results_df_totslf_SA[["discrete_two_stage_SL_preds"]] <- c(
-    mean((Validation$TOTSLF - discrete_pred)^2),
-    sqrt(mean((Validation$TOTSLF - discrete_pred)^2)),
-    1 - (sum((Validation$TOTSLF - discrete_pred)^2) / sum((Validation$TOTSLF - mean(Validation$TOTSLF))^2)),
-    mean(abs(Validation$TOTSLF - discrete_pred))
-  )
-
-# Label rows
-rownames(validation_results_df_totslf_SA) <- c("MSE", "RMSE", "R2", "MAE")
-
-# Organize the table by lowest R2
-validation_results_df_totslf_SA <- data.frame(t(validation_results_df_totslf_SA)) %>% arrange(desc(R2))
-
-# Format results in non-scientific notation
-validation_results_df_totslf_SA[] <- lapply(validation_results_df_totslf_SA, function(x) {
-  if (is.numeric(x)) format(x, scientific = FALSE)
-  else x
-})
+# Use custom function to get comparative results data frame
+validation_results_df_totslf_SA <- get_tssl_results_df(tssl_object = totslf_tssl, newY = Validation$TOTSLF)
 ```
 
 ```{r}
@@ -1334,11 +1214,13 @@ validation_results_df_totslf_SA[] <- lapply(validation_results_df_totslf_SA, fun
 
 ### Test Set Predictions
 
+**Critical note**: the below code will produce "errors", however this does NOT mean the model does not run. As shown above for the TOTEXP validation set prediction code block, the errors only indicate that some models do not converge or experience some other issue that results in their removal from the respective stage of the super learner. Since multiple combinations of algorithms are being considered, some will be removed without stopping the entire sets of algorithms from being considered. The code will still produce a fit model with internal predictions on the testing set. Warnings and excess output have been suppressed using YAML parameters and verbose = FALSE in the model definition.
+
 ```{r, message = FALSE, warning = FALSE}
 # Reset random seed
 set.seed(321)
 
-# Train model on training data and predict on test set 
+# Re-training model to predict on unseen test set (no working native "predict()" function) 
 totslf_tssl <- twostageSL(
   Y = Train$TOTSLF,
   X = Train %>% select(!c("TOTEXP", "TOTSLF", "DIABDX", "HIBPDX", "ANGIDX", "ARTHDX", "ASTHDX", "CABLADDR", "CACERVIX", "CACOLON", "CALUNG", "CALYMPH", "CAMELANO", "CASKINDK", "CASKINNM", "CAUTERUS", "CHDDX", "CHOLDX", "EMPHDX", "MIDX", "OHRTDX")),
@@ -1356,82 +1238,13 @@ totslf_tssl <- twostageSL(
 ```
 
 ```{r}
-# Evaluate which algorithms were selected in the model's two stages
-totslf_tssl
+# Evaluate which algorithms were selected in the model's two stages (non-zero coefficient = model weight in the two-stage super learner -> should match the earlier coefficients from predicting on the validation set)
+data.frame(totslf_tssl$coef)
 ```
 
 ```{r}
-# construct one-stage superlearner
-
-# extract onestage matrix z1
-z1 <- totslf_tssl$Z[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]]
-onestagename <- colnames(totslf_tssl$library.predict[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]])
-
-# get optimum weights for each algorithm in one-stage
-getCoef <- method.CC_LS.scale()$computeCoef(Z=z1,Y=Train$TOTEXP,libraryNames=onestagename,
-                                              verbose=FALSE)
-coef_onestage <- getCoef$coef
-
-# Prediction for each algorithm in one-stage superlearner
-predY_onestage <- totslf_tssl$library.predict[,(dim(totslf_tssl$Z)[2] - nrow(totslf_tssl$SL.library$library$singlestage[1]) + 1):dim(totslf_tssl$Z)[2]]
-
-# Compute onestage superlearner predictions on newX.
-onestage_pred <- totslf_tssl$method$computePred(predY = predY_onestage, coef = coef_onestage, 
-                                                   control = totslf_tssl$control)
-# get discrete two-stage superlearner
-discrete_pred <- totslf_tssl$library.predict[,which.min(totslf_tssl$cvRisk)]
-```
-
-
-```{r}
-# Creating results df for total OOP expenditures prediction
-
-# Add MSE, RMSE, R2, and MAE values for each algorithm variation in two-stage SL
-final_results_df_totslf_SA <- data.frame(apply(totslf_tssl$library.predict, 2, function(pred) {
-  c(
-    mean((Test$TOTSLF - pred)^2),
-    sqrt(mean((Test$TOTSLF - pred)^2)),
-    1 - (sum((Test$TOTSLF - pred)^2) / sum((Test$TOTSLF - mean(Test$TOTSLF))^2)),
-    mean(abs(Test$TOTSLF - pred))
-  )
-})
-)
-
-# Add two-stage SL results
-final_results_df_totslf_SA[["two_stage_SL_preds"]] <- c(
-    mean((Test$TOTSLF - totslf_tssl$SL.predict)^2),
-    sqrt(mean((Test$TOTSLF - totslf_tssl$SL.predict)^2)),
-    1 - (sum((Test$TOTSLF - totslf_tssl$SL.predict)^2) / sum((Test$TOTSLF - mean(Test$TOTSLF))^2)),
-    mean(abs(Test$TOTSLF - totslf_tssl$SL.predict))
-  )
-
-# Add one-stage SL results
-final_results_df_totslf_SA[["one_stage_SL_preds"]] <- c(
-    mean((Test$TOTSLF - onestage_pred)^2),
-    sqrt(mean((Test$TOTSLF - onestage_pred)^2)),
-    1 - (sum((Test$TOTSLF - onestage_pred)^2) / sum((Test$TOTSLF - mean(Test$TOTSLF))^2)),
-    mean(abs(Test$TOTSLF - onestage_pred))
-  )
-
-# Add discrete two-stage SL results
-final_results_df_totslf_SA[["discrete_two_stage_SL_preds"]] <- c(
-    mean((Test$TOTSLF - discrete_pred)^2),
-    sqrt(mean((Test$TOTSLF - discrete_pred)^2)),
-    1 - (sum((Test$TOTSLF - discrete_pred)^2) / sum((Test$TOTSLF - mean(Test$TOTSLF))^2)),
-    mean(abs(Test$TOTSLF - discrete_pred))
-  )
-
-# Label rows
-rownames(final_results_df_totslf_SA) <- c("MSE", "RMSE", "R2", "MAE")
-
-# Organize the table by lowest R2
-final_results_df_totslf_SA <- data.frame(t(final_results_df_totslf_SA)) %>% arrange(desc(R2))
-
-# Format results in non-scientific notation
-final_results_df_totslf_SA[] <- lapply(final_results_df_totslf_SA, function(x) {
-  if (is.numeric(x)) format(x, scientific = FALSE)
-  else x
-})
+# Use custom function to get comparative results data frame
+final_results_df_totslf_SA <- get_tssl_results_df(tssl_object = totslf_tssl, newY = Test$TOTSLF)
 ```
 
 ```{r}
@@ -1439,6 +1252,17 @@ final_results_df_totslf_SA[] <- lapply(final_results_df_totslf_SA, function(x) {
 # write.csv(final_results_df_totslf_SA, file = "final_results_df_totslf_SA.csv")
 ```
 
+## View Final Sensitivity Analysis Results Tables
+
+```{r}
+final_results_df_totexp_SA %>% View()
+```
+
+```{r}
+final_results_df_totslf_SA %>% View()
+```
+
+
 # References
 
-[1] Z. Wu, S. A. Berkowitz, P. J. Heagerty, and D. Benkeser, “A two-stage super learner for healthcare expenditures,” Health Services and Outcomes Research Methodology, vol. 22, no. 4, pp. 435–453, Jun. 2022. doi:10.1007/s10742-022-00275-x
+\[1\] Z. Wu, S. A. Berkowitz, P. J. Heagerty, and D. Benkeser, “A two-stage super learner for healthcare expenditures,” Health Services and Outcomes Research Methodology, vol. 22, no. 4, pp. 435–453, Jun. 2022. doi:10.1007/s10742-022-00275-x
