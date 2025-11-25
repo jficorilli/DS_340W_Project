@@ -7,14 +7,22 @@ editor: visual
 
 # Introduction
 
-This Quarto markdown file contains the code associated with the paper "Predicting Healthcare Expenditures for Individuals with Breast Cancer: Considering Chronic Comorbidities within a Two-Stage Machine Learning Approach." Several components of this paper's methodology and code implementation are derived from Wu et al. \[1\] and the paper's corresponding R code files (accessible at https://github.com/wuziyueemory/Two-stage-SuperLearner/tree/main/MEPS%20data%20analysis). This code primarily uses data from the Medical Expenditure Panel Survey (MEPS) Household Component Full Year Consolidated data files (years 2015, 2017, 2021, and 2023), which is managed by the U.S. Agency for Healthcare Research and Quality (AHRQ).
+This Quarto markdown file contains the code associated with the paper "Predicting Healthcare Expenditures for Individuals with Breast Cancer: Considering Chronic Comorbidities within a Two-Stage Machine Learning Approach." Several components of this paper's methodology and code implementation are derived from Wu et al. \[1\] and the paper's corresponding R code files (accessible at https://github.com/wuziyueemory/Two-stage-SuperLearner/tree/main/MEPS%20data%20analysis). This code primarily uses data from the Medical Expenditure Panel Survey (MEPS) Household Component Full Year Consolidated data files (years 2015, 2017, 2021, and 2023), which is managed by the U.S. Agency for Healthcare Research and Quality (AHRQ). It is advisable not to render this Quarto markdown file, as it involves substantial computation - please consider running each code block in sequential order to replicate the paper's results. 
 
 Note: the "2023_MEPS_HC_FYC.xlsx" file from this project's GitHub repository MUST be in the same file path as this file to be used in the below first code block. It can be found and downloaded directly here: https://github.com/jficorilli/DS_340W_Project/blob/main/Project%20Implementation/2023_MEPS_HC_FYC.xlsx
 
 # Loading Packages and MEPS HC FYC Data Files
 
-```{r, message = FALSE, warning = FALSE, results='hide'}
+```{r}
 # # Install packages from CRAN (if not already installed)
+# install.packages("grid")
+# install.packages("Matrix")
+# install.packages("survival")
+# install.packages("nnls")
+# install.packages("splines")
+# install.packages("foreach")
+# install.packages("gam")
+# install.packages("SuperLearner")
 # install.packages("survey")
 # install.packages("foreign")
 # install.packages("haven")
@@ -36,7 +44,15 @@ Note: the "2023_MEPS_HC_FYC.xlsx" file from this project's GitHub repository MUS
 # devtools::install_github("wuziyueemory/twostageSL")
 # devtools::install_github("e-mitchell/meps_r_pkg/MEPS")
 
-
+# Loading relevant packages (assuming they are installed/accessible)
+library(grid)
+library(Matrix)
+library(survival)
+library(nnls)
+library(splines)
+library(foreach)
+library(gam)
+library(SuperLearner)
 library(survey)
 library(foreign) 
 library(haven)
