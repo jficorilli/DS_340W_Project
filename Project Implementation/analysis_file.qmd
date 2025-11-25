@@ -11,9 +11,9 @@ This Quarto markdown file contains the code associated with the paper "Predictin
 
 Note: the "2023_MEPS_HC_FYC.xlsx" file from this project's GitHub repository MUST be in the same file path as this file to be used in the below first code block. It can be found and downloaded directly here: https://github.com/jficorilli/DS_340W_Project/blob/main/Project%20Implementation/2023_MEPS_HC_FYC.xlsx
 
-# Loading Packages and MEPS HC FYC Data Files
+# Loading/Installing Packages
 
-```{r}
+```{r, message = FALSE, warning = FALSE, results='hide'}
 # # Install packages from CRAN (if not already installed)
 # install.packages("grid")
 # install.packages("Matrix")
@@ -43,7 +43,9 @@ Note: the "2023_MEPS_HC_FYC.xlsx" file from this project's GitHub repository MUS
 # 
 # devtools::install_github("wuziyueemory/twostageSL")
 # devtools::install_github("e-mitchell/meps_r_pkg/MEPS")
+```
 
+```{r, message = FALSE, warning = FALSE, results='hide'}
 # Loading relevant packages (assuming they are installed/accessible)
 library(grid)
 library(Matrix)
@@ -68,12 +70,17 @@ library(cowplot)
 library(haven)
 library(shapviz)
 library(fastshap)
+```
 
+# Loading MEPS HC FYC Data Files
+
+```{r, message = FALSE, warning = FALSE, results='hide'}
 fyc2023 <- read_xlsx("2023_MEPS_HC_FYC.xlsx") # The 2023 MEPS HC FYC file is sourced from the MEPS HC FYC website, as it was not accessible through the "read_MEPS" function in the "MEPS" package as of 11/13/2025
 fyc2021 <- read_MEPS(year = 2021, type = "FYC")
 fyc2017 <- read_MEPS(year = 2017, type = "FYC")
 fyc2015 <- read_MEPS(year = 2015, type = "FYC")
 ```
+
 
 ## Creating Expenditure Price Adjustment Vectors based on AHRQ Guidelines
 
