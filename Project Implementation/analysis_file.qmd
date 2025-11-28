@@ -2,14 +2,14 @@
 title: "Predicting Healthcare Expenditures for Individuals with Breast Cancer: Considering Chronic Comorbidities within a Two-Stage Machine Learning Approach"
 author: "Jason Sean Ficorilli"
 format: html
-editor: visual
+editor: source
 ---
 
 # Introduction
 
-This Quarto markdown file contains the code associated with the paper "Predicting Healthcare Expenditures for Individuals with Breast Cancer: Considering Chronic Comorbidities within a Two-Stage Machine Learning Approach." Several components of this paper's methodology and code implementation are derived from Wu et al. \[1\] and the paper's corresponding R code files (accessible at https://github.com/wuziyueemory/Two-stage-SuperLearner/tree/main/MEPS%20data%20analysis). This code primarily uses data from the Medical Expenditure Panel Survey (MEPS) Household Component Full Year Consolidated data files (years 2015, 2017, 2021, and 2023), which is managed by the U.S. Agency for Healthcare Research and Quality (AHRQ). It is advisable not to render this Quarto markdown file, as it involves substantial computation - please consider running each code block in sequential order to replicate the paper's results. 
+This Quarto markdown file contains the code associated with the paper "Predicting Healthcare Expenditures for Individuals with Breast Cancer: Considering Chronic Comorbidities within a Two-Stage Machine Learning Approach." Several components of this paper's methodology and code implementation are derived from Wu et al. \[1\] and the paper's corresponding R code files (accessible at https://github.com/wuziyueemory/Two-stage-SuperLearner/tree/main/MEPS%20data%20analysis). This code primarily uses data from the Medical Expenditure Panel Survey (MEPS) Household Component Full Year Consolidated data files (years 2015, 2017, 2021, and 2023), which is managed by the U.S. Agency for Healthcare Research and Quality (AHRQ). 
 
-Note: the "2023_MEPS_HC_FYC.xlsx" file from this project's GitHub repository MUST be in the same file path as this file to be used in the below first code block. It can be found and downloaded directly here: https://github.com/jficorilli/DS_340W_Project/blob/main/Project%20Implementation/2023_MEPS_HC_FYC.xlsx
+It is not advisable to render this Quarto markdown file, as it involves substantial computation - please consider running each code block in sequential order to replicate the paper's results. It is also advised to run each block of this file in "source" editor mode, as specified in the above YAML parameter.
 
 # Loading/Installing Packages
 
@@ -37,12 +37,20 @@ Note: the "2023_MEPS_HC_FYC.xlsx" file from this project's GitHub repository MUS
 # install.packages("shapviz")
 # install.packages("fastshap")
 # 
-# # Install packages from GitHub (if not already installed)
+# # Install some "twostageSL" package dependencies and packages from GitHub (if not already installed)
 # install.packages("devtools")
+# install.packages("Rdpack")
+# install.packages("flexsurv")
+# install.packages("moments")
+# install.packages("quantreg")
+# install.packages("sandwich")
+# install.packages("glmnet")
+# install.packages("randomForest")
+# install.packages("nloptr")
+
 # library(devtools)
-# 
-# devtools::install_github("wuziyueemory/twostageSL")
-# devtools::install_github("e-mitchell/meps_r_pkg/MEPS")
+# devtools::install_github("wuziyueemory/twostageSL", dependencies = TRUE)
+# devtools::install_github("e-mitchell/meps_r_pkg/MEPS", dependencies = TRUE)
 ```
 
 ```{r, message = FALSE, warning = FALSE, results='hide'}
@@ -73,6 +81,8 @@ library(fastshap)
 ```
 
 # Loading MEPS HC FYC Data Files
+
+Note: the "2023_MEPS_HC_FYC.xlsx" file from this project's GitHub repository MUST be in the same file path as this file to be used in the below code block. It can be found and downloaded directly here: https://github.com/jficorilli/DS_340W_Project/blob/main/Project%20Implementation/2023_MEPS_HC_FYC.xlsx. The remaining MEPS HC FYC files are downloaded using the "read_MEPS()" function from the "MEPS" package provided by the AHRQ, which is available for reference in this GitHub repository: https://github.com/e-mitchell/meps_r_pkg.
 
 ```{r, message = FALSE, warning = FALSE, results='hide'}
 fyc2023 <- read_xlsx("2023_MEPS_HC_FYC.xlsx") # The 2023 MEPS HC FYC file is sourced from the MEPS HC FYC website, as it was not accessible through the "read_MEPS" function in the "MEPS" package as of 11/13/2025
@@ -785,7 +795,7 @@ pool_final <- pool_filtered %>% select(!c("IF_2015", "RACETHX_WHITE", "REGION_S"
 
 # Exploratory Data Analysis
 
-```{r}
+```{r, warning=FALSE}
 # Correlation heatmap of continuous variables
 pool_final %>% 
   select(c("TOTEXP", "TOTSLF", "AGE_YE", "EDUCYR", "POVLEV", "IPDIS", "OBTOTV", "RXTOT")) %>%
