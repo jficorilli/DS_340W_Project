@@ -8,4 +8,4 @@ The "Replicating Parent Paper" holds files and materials for my efforts to recre
 For any inquiries related to this repository and its files, please contact Jason Ficorilli (email: jsf5479@psu.edu).
 
 ## References
-\[1\] Z. Wu, S. A. Berkowitz, P. J. Heagerty, and D. Benkeser, “A two-stage super learner for healthcare expenditures,” Health Services and Outcomes Research Methodology, vol. 22, no. 4, pp. 435–453, Jun. 2022. doi:10.1007/s10742-022-00275-x
+\[1\] Z. Wu, S. A. Berkowitz, P. J. Heagerty, and D. Benkeser, “A two-stage super learner for healthcare expenditures,” *Health Services and Outcomes Research Methodology*, vol. 22, no. 4, pp. 435–453, Jun. 2022. doi:10.1007/s10742-022-00275-x
